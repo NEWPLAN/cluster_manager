@@ -58,7 +58,7 @@ parser.add_argument(
     "--env",
     type=str,
     default="/home/newplan/.software",
-    help="the environment for execution",
+    help="speficy the environment for execution",
 )
 
 
@@ -280,12 +280,13 @@ class SSHClientAbst:
 
     def send_command(self, command, using_sudo, interactive, allow_print):
         ################################
+        allowed_cluster = [x.strip() for x in allow_print.split(",")]
         packed_task = {
             "cmd": command,
             "using_sudo": using_sudo,
             "interactive": interactive,
             "allow_print": True
-            if (self.id in allow_print or allow_print == "all")
+            if (self.id in allowed_cluster or allow_print.strip() == "all")
             else False,
         }
         self.parent_channel.send(json.dumps(packed_task))
@@ -345,7 +346,7 @@ class SSHClientAbst:
     def query_command(self, command, print=True):
         while True:
             ret = self.get_ret_from_channel()
-            if ret is None:
+            if ret is None and not args.interactive:
                 logger.warning(
                     "{}({}:{}) has not returned the result....".format(
                         self.id, self.remote_host, self.remote_port
