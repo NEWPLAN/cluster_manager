@@ -54,6 +54,13 @@ parser.add_argument(
     "--use_glog", action="store_true", help="enable glog as logger or not"
 )
 
+parser.add_argument(
+    "--env",
+    type=str,
+    default="/home/newplan/.software",
+    help="the environment for execution",
+)
+
 
 args = parser.parse_args()
 
@@ -139,9 +146,15 @@ class SshClientImpl:
             self.client.close()
             self.client = None
 
-    def load_env(self):
+    def load_env(self, env=args.env):
+        env = env.strip()
+        if len(env) == 0:
+            return " set -e; "  # return immediately if error
 
-        BASE_PREFIX = "/home/newplan/.software"
+        if env[-1] == ";":
+            env = env[:-2]
+
+        BASE_PREFIX = env
         LD_LIBRARY_PATH = (
             'export LD_LIBRARY_PATH="'
             + BASE_PREFIX
