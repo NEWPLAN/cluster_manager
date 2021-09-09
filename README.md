@@ -12,3 +12,7 @@ using the above task as an example,  you could use the following script:
 It allows the user to sync files from a local path (indicated by ```--sync_path```) to the remote clusters (the same path)
 ```python3 ssh_controller.py --sync --sync_path="XXXXX"```
 
+
+# usage example
+if you want to kill some threads, you could using ```ps -aux | grep mesh_comm_service | grep -v ssh | awk \'{print $2}\' | xargs kill```
+
