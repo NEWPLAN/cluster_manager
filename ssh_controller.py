@@ -813,15 +813,3 @@ if __name__ == "__main__":
     args_check(args)
     test()
 
-# compile the code:
-"""
---cmd="cd /home/newplan/test/FastPS/mesh_comm_service; make build; echo DONE;"
-working in synchronous mode: the execution result are printed until all commands are executed
-    python3 ssh_controller.py --cmd="cd /home/newplan/test/FastPS/mesh_comm_service; make build; echo DONE;" --allow_print="g13"
-
-working in asynchronous mode: the execution result are printed once there are output in the remote
-    python3 ssh_controller.py --cmd="cd /home/newplan/test/FastPS/mesh_comm_service; make build; echo DONE;" --allow_print="g13" --interactive
-
-working in sftp mode: move data from current path to the cluster
-    python3 ssh_controller.py --sync --sync_path="/home/newplan/test/FastPS"
-"""
