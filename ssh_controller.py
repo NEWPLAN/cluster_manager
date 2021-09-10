@@ -405,7 +405,7 @@ class SSHClientAbst:
 
             if unpack_task["cmd"] == "CLOSE-IMM":  # terminated right now!
                 logger.info(
-                    "SSHClient({}:{}) is terminated right now.".format(
+                    "SSHClient({}:{}) stops services.".format(
                         self.remote_host, self.remote_port
                     )
                 )
@@ -467,26 +467,28 @@ class SSHClientAbst:
                 continue
             unpack_task = json.loads(recv_data)
 
+            if unpack_task["cmd"] == "CLOSE-IMM":  # terminated right now!
+                logger.info(
+                    "SSHClient({}:{}) stops services.".format(
+                        self.remote_host, self.remote_port
+                    )
+                )
+                break
+
             assert (
                 unpack_task["interactive"] is True
             ), "Invalid task submitted to the interactive channel({}:{})".format(
                 self.remote_host, self.remote_port
             )
 
-            if unpack_task["cmd"] == "CLOSE-IMM":  # terminated right now!
-                logger.info(
-                    "SSHClient({}:{}) is terminated right now.".format(
-                        self.remote_host, self.remote_port
-                    )
-                )
-                break
-
             try:
                 modified_cmd = unpack_task["cmd"].strip()
                 if modified_cmd[-1] != ";":
                     modified_cmd += ";"
-                modified_cmd += " echo EVERYTHING_IS_TERMINATED_CORRECTLY;"
-                exe_ret = {}
+                exe_ret = {"cmd": modified_cmd, "status": True, "out": [], "err": []}
+
+                modified_cmd += " echo EVERYTHING_IS_TERMINATED_CORRECTLY_WITH=`expr 100 + 100`-DONE;"
+                # logger.info("cmd = {}".format(modified_cmd))
 
                 self.ssh_client.using_interactive_channel(modified_cmd)
                 ret = None
@@ -496,8 +498,8 @@ class SSHClientAbst:
                         time.sleep(0.1)
                         ret = self.ssh_client.querying_interactive_channel()
 
-                    # if "EVERYTHING_IS_TERMINATED_CORRECTLY" in ret:
-                    #     should_close = True
+                    if "EVERYTHING_IS_TERMINATED_CORRECTLY_WITH=200-DONE" in ret:
+                        should_close = True
                     if ret is not None:
                         if unpack_task["allow_print"] is True:
                             print(ret, end="")
@@ -596,6 +598,7 @@ class SSHClientAbst:
 
         if args.interactive:
             self.ssh_remote_execution_interactive(io_channel)
+            return
 
         self.ssh_remote_execution(io_channel)
         pass
