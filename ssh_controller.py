@@ -346,12 +346,13 @@ class SSHClientAbst:
     def query_command(self, command, print=True):
         while True:
             ret = self.get_ret_from_channel()
-            if ret is None and not args.interactive:
-                logger.warning(
-                    "{}({}:{}) has not returned the result....".format(
-                        self.id, self.remote_host, self.remote_port
+            if ret is None:
+                if not args.interactive:
+                    logger.warning(
+                        "{}({}:{}) has not returned the result....".format(
+                            self.id, self.remote_host, self.remote_port
+                        )
                     )
-                )
                 time.sleep(1)
             else:
                 break
@@ -516,6 +517,7 @@ class SSHClientAbst:
                         self.remote_host, self.remote_port, unpack_task["cmd"]
                     )
                 )
+                io_channel.send(json.dumps(exe_ret))
                 pass
             pass
 
@@ -627,8 +629,19 @@ class SSHClientAbst:
         self.process_handler.join()
 
 
+def singleton(cls):
+    instances = {}
+
+    def getinstance(*args, **kwargs):
+        if cls not in instances:
+            instances[cls] = cls(*args, **kwargs)
+            return instances[cls]
+        return getinstance
+
+
 # ConnectionManager is the manager to support multiple connections simultaneously.
 # It allows users to add connections one by one.
+# @singleton
 class ConnectionManager:
     def __init__(self, enable_sftp=False):
         logger.info("Creating ConnectionManager")
@@ -637,8 +650,12 @@ class ConnectionManager:
         if enable_sftp:
             logger.warning("enable sftp service")
             self.enable_sftp = True
-
         pass
+
+    # def __new__(cls, *args, **kwargs):
+    #     if not hasattr(ConnectionManager, "_instance"):  # 反射
+    #         ConnectionManager._instance = object.__new__(cls)
+    #     return ConnectionManager._instance
 
     def add_client(self, id, ip, port=22, username="newplan", password=" "):
         ssh_client = SSHClientAbst(ip, port, username, password, id)
@@ -648,7 +665,7 @@ class ConnectionManager:
         for each_ssh in self.ssh_handler:
             each_ssh.connect()
 
-    def query_exec_at(self, id="all"):
+    def query_result_at(self, id="all"):
         is_checked = {}
         execution_with_error = []
         if id == "all":  # query all remotes
@@ -710,7 +727,7 @@ class ConnectionManager:
                 interactive=interactive,
                 allow_print=allow_print,
             )
-        self.query_exec_at(allow_print)
+        self.query_result_at(allow_print)
 
     def stop(self):
         for each_ssh in self.ssh_handler:
@@ -723,7 +740,7 @@ class ConnectionManager:
         for each_ssh in self.ssh_handler:
             each_ssh.close()
 
-    def sync_file(self, src, target, thread_pool=4):
+    def sync_file(self, src, target, thread_pool=10):
         logger.info("Synching file from {}, to {}".format(src, target))
         if not self.enable_sftp:
             raise Exception("stfp service is not enabled, return immediately")
@@ -826,4 +843,3 @@ def test():
 if __name__ == "__main__":
     args_check(args)
     test()
-
