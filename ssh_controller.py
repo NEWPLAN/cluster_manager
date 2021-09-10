@@ -368,7 +368,7 @@ class SSHClientAbst:
         if ret["status"] is False:
             logger.error("Encounter an error at {}".format(self.id))
             print = True
-        if print:
+        if print and not args.interactive:
             logger.info(
                 "The result of execution cmd ({}) from {}({}:{}) is:\n{}".format(
                     ret["cmd"],

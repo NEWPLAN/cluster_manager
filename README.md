@@ -1,5 +1,5 @@
 # cluster_manager
-a python3-based wrapper to submitted task to the remote clusters. it supports three basic functions as follows.
+A python3-based wrapper to submit execution task to the remote clusters. It supports three basic functions as follows.
 
 ### synchronous execution:
 if you want to execute a command (e.g., cd XXXXX; make build; echo DONE;), you could use the following script:
@@ -14,9 +14,9 @@ It allows the user to sync files from a local path (indicated by ```--sync_path`
 
 
 # usage example 
-if you want to kill some threads, you could using ```ps -aux | grep mesh_comm_service | grep -v ssh | awk \'{print $2}\' | xargs kill```
+if you want to kill some threads, you could use ```ps -aux | grep mesh_comm_service | grep -v ssh | awk \'{print $2}\' | xargs kill```
 
 # arguments:
---env: speficy the execution environment
+--env: specify the execution environment
 
 
