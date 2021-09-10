@@ -798,11 +798,12 @@ class ConnectionManager:
 
     def __del__(self):
         logger.info(
-            """Finally, it comes to the end. It's time to release all the resources"""
+            """Finally, it comes to the end, and congraduations, the commands are executed as expected! """
+            """Next, it's time to release all the resources and close the connections!"""
         )
 
         self.stop()
-        logger.info("All connections are stopped\n\n")
+        logger.info("All services are stopped\n\n")
 
         self.close()
         logger.info("All connections are closed\n\n")
