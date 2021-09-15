@@ -7,21 +7,22 @@ import os
 import argparse
 import paramiko
 import json
-from netifaces import interfaces, ifaddresses, AF_INET, AF_INET6
+
+import netifaces as nf
 
 
 def ipv4_addresses():
     ip_list = []
-    for interface in interfaces():
-        for link in ifaddresses(interface).get(AF_INET, ()):
+    for interface in nf.interfaces():
+        for link in nf.ifaddresses(interface).get(nf.AF_INET, ()):
             ip_list.append(link["addr"])
     return ip_list
 
 
 def ipv6_addresses():
     ip_list = []
-    for interface in interfaces():
-        for link in ifaddresses(interface).get(AF_INET6, ()):
+    for interface in nf.interfaces():
+        for link in nf.ifaddresses(interface).get(nf.AF_INET6, ()):
             ip_list.append(link["addr"])
     return ip_list
 
