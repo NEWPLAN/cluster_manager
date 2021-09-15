@@ -171,30 +171,6 @@ class SshClientImpl:
             f'export CPLUS_INCLUDE_PATH="{BASE_PREFIX}/include:$CPLUS_INCLUDE_PATH";'
         )
 
-        # LD_LIBRARY_PATH = (
-        #     'export LD_LIBRARY_PATH="'
-        #     + BASE_PREFIX
-        #     + "/lib:"
-        #     + BASE_PREFIX
-        #     + '/lib64:$LD_LIBRARY_PATH";'
-        # )
-        # LIBRARY_PATH = (
-        #     'export LIBRARY_PATH="'
-        #     + BASE_PREFIX
-        #     + "/lib:"
-        #     + BASE_PREFIX
-        #     + '/lib64:$LIBRARY_PATH";'
-        # )
-        # PATH = 'export PATH="' + BASE_PREFIX + '/bin:$PATH";'
-        # C_INCLUDE_PATH = (
-        #     'export C_INCLUDE_PATH="' + BASE_PREFIX + '/include:$C_INCLUDE_PATH";'
-        # )
-        # CPLUS_INCLUDE_PATH = (
-        #     'export CPLUS_INCLUDE_PATH="'
-        #     + BASE_PREFIX
-        #     + '/include:$CPLUS_INCLUDE_PATH";'
-        # )
-
         base_env = "".join(
             [LD_LIBRARY_PATH, LIBRARY_PATH, C_INCLUDE_PATH, CPLUS_INCLUDE_PATH, PATH]
         )
@@ -636,14 +612,12 @@ class SSHClientAbst:
         pass
 
     def start(self):
-        logger.info("{}:{} starts services".format(self.remote_host, self.remote_port))
+        logger.info(f"{self.remote_host}:{self.remote_port} starts services")
         self.process_handler.start()
 
     def close(self):
         logger.info(
-            "{}({}:{}) closes connection".format(
-                self.id, self.remote_host, self.remote_port
-            )
+            f"{self.id}({self.remote_host}:{self.remote_port}) closes connection"
         )
         self.process_handler.join()
 
@@ -695,9 +669,7 @@ class ConnectionManager:
                         execution_with_error.append(each_ssh.id)
                 else:
                     logger.warning(
-                        "{}({}:{}) is not connected, ignore.".format(
-                            each_ssh.id, each_ssh.remote_host, each_ssh.remote_port
-                        )
+                        f"{each_ssh.id}({each_ssh.remote_host}:{each_ssh.remote_port}) is not connected, ignore."
                     )
         else:  # query some special node
             nodes = [x.strip() for x in id.split(",")]
