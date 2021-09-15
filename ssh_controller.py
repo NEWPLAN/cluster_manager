@@ -156,30 +156,44 @@ class SshClientImpl:
         if env[-1] == ";":
             env = env[:-2]
 
+        if env[-1] == "/":
+            env = env[:-2]
+
         BASE_PREFIX = env
-        LD_LIBRARY_PATH = (
-            'export LD_LIBRARY_PATH="'
-            + BASE_PREFIX
-            + "/lib:"
-            + BASE_PREFIX
-            + '/lib64:$LD_LIBRARY_PATH";'
-        )
-        LIBRARY_PATH = (
-            'export LIBRARY_PATH="'
-            + BASE_PREFIX
-            + "/lib:"
-            + BASE_PREFIX
-            + '/lib64:$LIBRARY_PATH";'
-        )
-        PATH = 'export PATH="' + BASE_PREFIX + '/bin:$PATH";'
+
+        LIBRARY_PATH = f'export LIBRARY_PATH="{BASE_PREFIX}/lib:{BASE_PREFIX}/lib64:$LIBRARY_PATH";'
+        LD_LIBRARY_PATH = f'export LD_LIBRARY_PATH="{BASE_PREFIX}/lib:{BASE_PREFIX}/lib64:$LD_LIBRARY_PATH";'
+        PATH = f'export PATH="{BASE_PREFIX}/bin:$PATH";'
         C_INCLUDE_PATH = (
-            'export C_INCLUDE_PATH="' + BASE_PREFIX + '/include:$C_INCLUDE_PATH";'
+            f'export C_INCLUDE_PATH="{BASE_PREFIX}/include:$C_INCLUDE_PATH";'
         )
         CPLUS_INCLUDE_PATH = (
-            'export CPLUS_INCLUDE_PATH="'
-            + BASE_PREFIX
-            + '/include:$CPLUS_INCLUDE_PATH";'
+            f'export CPLUS_INCLUDE_PATH="{BASE_PREFIX}/include:$CPLUS_INCLUDE_PATH";'
         )
+
+        # LD_LIBRARY_PATH = (
+        #     'export LD_LIBRARY_PATH="'
+        #     + BASE_PREFIX
+        #     + "/lib:"
+        #     + BASE_PREFIX
+        #     + '/lib64:$LD_LIBRARY_PATH";'
+        # )
+        # LIBRARY_PATH = (
+        #     'export LIBRARY_PATH="'
+        #     + BASE_PREFIX
+        #     + "/lib:"
+        #     + BASE_PREFIX
+        #     + '/lib64:$LIBRARY_PATH";'
+        # )
+        # PATH = 'export PATH="' + BASE_PREFIX + '/bin:$PATH";'
+        # C_INCLUDE_PATH = (
+        #     'export C_INCLUDE_PATH="' + BASE_PREFIX + '/include:$C_INCLUDE_PATH";'
+        # )
+        # CPLUS_INCLUDE_PATH = (
+        #     'export CPLUS_INCLUDE_PATH="'
+        #     + BASE_PREFIX
+        #     + '/include:$CPLUS_INCLUDE_PATH";'
+        # )
 
         base_env = "".join(
             [LD_LIBRARY_PATH, LIBRARY_PATH, C_INCLUDE_PATH, CPLUS_INCLUDE_PATH, PATH]
@@ -745,7 +759,7 @@ class ConnectionManager:
         for each_ssh in self.ssh_handler:
             each_ssh.close()
 
-    def sync_file(self, src, target, thread_pool=10):
+    def sync_file(self, src, target, thread_pool=4):
         logger.info("Synching file from {}, to {}".format(src, target))
         if not self.enable_sftp:
             raise Exception("stfp service is not enabled, return immediately")
