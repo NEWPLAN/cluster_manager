@@ -425,7 +425,7 @@ class SshClientImpl:
             logger.error(f"Error of executing {cmd}, error: {e}")
         pass
 
-    def __read_helper__(self, channel, repeat=10, read_byte=16384):
+    def __read_helper__(self, channel, repeat=10, read_byte=4096):
         cnt = 0
         while not channel.recv_ready():
             time.sleep(0.1)
@@ -867,7 +867,7 @@ class SSHClientSession:
             )
             is_connected = True
         except Exception as e:
-            logger.info(
+            logger.error(
                 f"Cannot connected to {self.remote_host}:{self.remote_port}, for error: {e}"
             )
         finally:
@@ -953,15 +953,19 @@ class SSHClientSession:
                     if args.stream_log:
                         ret_, ret_code = self.ssh_client.query_streamed_channel()
                         logger.debug("ret-code: {}".format(ret_code))
+
                         if ret_code is not None:
+                            ret["status"] = True if ret_code == 0 else False
                             should_close = True
                             break
-                        if ret_code == 0:
-                            ret["status"] = True
+
                     else:
                         ret_ = self.ssh_client.querying_interactive_channel()
 
-                if "EVERYTHING_IS_TERMINATED_CORRECTLY_WITH=200-DONE" in ret_:
+                if (
+                    ret_ is not None
+                    and "EVERYTHING_IS_TERMINATED_CORRECTLY_WITH=200-DONE" in ret_
+                ):
                     should_close = True
 
                 if ret_ is not None:
