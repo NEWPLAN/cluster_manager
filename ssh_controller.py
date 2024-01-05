@@ -1,5 +1,6 @@
 #! /usr/bin/env python3
 
+
 import multiprocessing as mp
 
 import time
@@ -7,8 +8,10 @@ import os
 import argparse
 import datetime
 import inspect
+import sys
 
 import json
+import socket
 
 try:
     import paramiko
@@ -52,13 +55,74 @@ class IPAddrHelper(object):
 
     @staticmethod
     def is_local(ip):
+        ip_from_dns = IPAddrHelper.query_ip_from_dns(ip)
+        local_ip_addr = IPAddrHelper.ipv4_addresses() + IPAddrHelper.ipv6_addresses()
+        for ip_addr in ip_from_dns:
+            if ip_addr in local_ip_addr:
+                return True
+
+        return False
         return ip in IPAddrHelper.ipv4_addresses() + IPAddrHelper.ipv6_addresses()
+
+    @staticmethod
+    def query_ip_from_dns(hostname: str):
+        ip_list = [hostname]
+
+        def load_ipaddr_helper(net_proto):
+            tmp_list = []
+            try:
+                ipv_addr = socket.getaddrinfo(hostname, None, net_proto)
+                for each_elem in ipv_addr:
+                    real_ip = each_elem[4][0]
+                    tmp_list.append(real_ip)
+            except Exception as e:
+                print(
+                    "failed get ip address, with err={}".format(e),
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return tmp_list
+
+        ip_list += load_ipaddr_helper(socket.AF_INET)
+        ip_list += load_ipaddr_helper(socket.AF_INET6)
+
+        ip_list = [x for x in set(ip_list) if x is not None and len(x) != 0]
+        return ip_list
+        pass
+
+
+# ip_str = [
+#     "bps-node-14",
+#     "bps-node-15",
+#     "github.com",
+#     "",
+#     "localhost",
+#     "127.0.0.1",
+#     "::ffff:157.245.159.242",
+#     "fdbd:dc02:2a:716::17",
+#     "fdbd:dc02:2a:10e::28",
+# ]
+# for host_name in ip_str:
+#     print(
+#         "The target of {} is {}".format(
+#             host_name, IPAddrHelper.query_ip_from_dns(host_name)
+#         )
+#     )
+#     print(
+#         "The target of {} is local = {}".format(
+#             host_name, IPAddrHelper.is_local(host_name)
+#         )
+#     )
+
+# exit(-1)
 
 
 class ArgHelper(object):
     @staticmethod
     def load_arguments():
-        parser = argparse.ArgumentParser()
+        parser = argparse.ArgumentParser(
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        )
         parser.add_argument("--H", type=str, help="host ID [1,2,3,4,5]")
         parser.add_argument(
             "--cmd", type=str, default="", help="executing your command"
@@ -298,6 +362,7 @@ class SshClientImpl:
         self.port = port
         self._ssh_interactive = None
         self._pipelined_channel = None
+        self._cached_bytes_ = b""
         p_key = key
 
         # https://blog.csdn.net/DaMercy/article/details/127780178
@@ -346,14 +411,53 @@ class SshClientImpl:
             logger.error(f"Error of executing {cmd}, error: {e}")
 
     def use_streamed_channel(self, cmd):
+        # non_blocking mode: https://gist.github.com/kdheepak/c18f030494fea16ffd92d95c93a6d40d
+        # https://stackoverflow.com/questions/760978/long-running-ssh-commands-in-python-paramiko-module-and-how-to-end-them
+
         if self._pipelined_channel is None:
-            self._pipelined_channel = self.client.invoke_shell()
-            self._pipelined_channel.settimeout(0.0)
+            self._pipelined_channel = self.client.get_transport().open_session()
+            # self._pipelined_channel.settimeout(0.0)
+            self._pipelined_channel.set_combine_stderr(True)
         try:
             self._pipelined_channel.exec_command(cmd)
             pass
         except Exception as e:
             logger.error(f"Error of executing {cmd}, error: {e}")
+        pass
+
+    def __read_helper__(self, channel, repeat=10, read_byte=16384):
+        cnt = 0
+        while not channel.recv_ready():
+            time.sleep(0.1)
+            cnt += 1
+            if cnt > repeat:
+                return None
+            pass
+
+        try:
+            self._cached_bytes_ += channel.recv(read_byte)
+
+            ret_str = self._cached_bytes_.decode("utf-8")
+
+            self._cached_bytes_ = b""  # only clean result when decode success
+            # ret_str = channel.recv(read_byte).decode("utf-8")
+            prefix_format = "<{}>:   ".format(self.host)
+            joint_prefix = "\n" + " " * len(prefix_format)
+            split_tmp_result = ret_str.split("\n")
+            ret_str = (
+                prefix_format
+                + joint_prefix.join(split_tmp_result[:-1])
+                + "\n"
+                + split_tmp_result[-1]  # for last one, we should alway keep the \n
+            )
+            return ret_str
+
+        except Exception as e:
+            logger.error(
+                f"node({self.host}:{self.port}) unknown error for execution"
+                f", for reason: {e}"
+            )
+            return None
         pass
 
     def query_streamed_channel(self):  # not finished yet
@@ -363,10 +467,14 @@ class SshClientImpl:
             f"to submit the command to {self.host}:{self.port}"
         )
 
+        execution_status = None
+        if self._pipelined_channel.exit_status_ready():
+            execution_status = self._pipelined_channel.recv_exit_status()
+
         def read_helper():
             cnt = 0
             while not self._pipelined_channel.recv_ready():
-                time.sleep(0.2)
+                time.sleep(0.1)
                 cnt += 1
                 if cnt > 10:
                     return None
@@ -391,23 +499,23 @@ class SshClientImpl:
                     f", for reason: {e}"
                 )
 
-        data = read_helper()
+        # result = read_helper()
+        result = self.__read_helper__(self._pipelined_channel)
 
-        if data is not None:
-            return data
+        if result is not None:
+            return result, None
 
         last_bytes = []
         if self._pipelined_channel.exit_status_ready():
             while True:
-                new_data = read_helper()
+                new_data = self.__read_helper__(self._pipelined_channel)
                 if new_data is not None:
                     last_bytes.append(new_data)
                 else:
                     break
 
         ret = None if len(last_bytes) == 0 else "".join(last_bytes)
-        logger.info("ret code: {}".format(self._pipelined_channel.recv_exit_status()))
-        return ret
+        return ret, execution_status
         pass
 
     def querying_interactive_channel(self):
@@ -426,8 +534,7 @@ class SshClientImpl:
 
         try:
             ret_str = self._ssh_interactive.recv(16384).decode("utf-8")
-            # ret_code = self._ssh_interactive.exit_status_ready()
-            # logger.debug("ret code = {}".format(ret_code))
+
             prefix_format = "<{}>:   ".format(self.host)
             joint_prefix = "\n" + " " * len(prefix_format)
             split_tmp_result = ret_str.split("\n")
@@ -544,7 +651,12 @@ class SFTPService:
             logger.warning("IGNORE self-node: {}".format(self.borrowed_ctx.host))
             return
 
+        item_name = None
+
         try:
+            if os.path.isdir(source):  # create directory if it is
+                self.mkdir(target, ignore_existing=True)
+
             for item in os.listdir(source):
                 if os.path.isfile(os.path.join(source, item)):
                     logger.debug(
@@ -552,6 +664,7 @@ class SFTPService:
                             os.path.join(source, item), self.borrowed_ctx.host
                         )
                     )
+                    item_name = item
                     self._sftp_channel.put(
                         os.path.join(source, item), "%s/%s" % (target, item)
                     )
@@ -562,7 +675,11 @@ class SFTPService:
                     )
         except Exception as e:
             logger.warning(
-                "Error of processing target = ({}:{}), for reason: {}".format(
+                "Error of processing copy {}/{} to {}/{} in target = ({}:{}), for reason: {}".format(
+                    source,
+                    item_name,
+                    target,
+                    item_name,
                     self.borrowed_ctx.host,
                     self.borrowed_ctx.port,
                     e,
@@ -699,143 +816,6 @@ class SSHClientSession:
 
         return ret["status"] is True
 
-    def ssh_remote_execution(self, io_channel):
-        logger.debug(f"{self.remote_host}:{self.remote_port} works in sync mode")
-        while True:
-            logger.debug(
-                f"{self.remote_host}:{self.remote_port} is ready, "
-                "wait for cmd from master..."
-            )
-            if io_channel.poll():  # the upper layer has submitted new task
-                recv_data = io_channel.recv()  # accept new cmd
-            else:  # otherwise, continue the loops
-                time.sleep(0.5)
-                continue
-            unpack_task = json.loads(recv_data)
-            logger.debug(
-                "{}:{} accepts a cmd({}) from master...".format(
-                    self.remote_host, self.remote_port, unpack_task["cmd"]
-                )
-            )
-
-            if unpack_task["cmd"] == "CLOSE-IMM":  # terminated right now!
-                logger.debug(
-                    "SSHClient({}:{}) stops services.".format(
-                        self.remote_host, self.remote_port
-                    )
-                )
-                break
-
-            try:
-                modified_cmd = unpack_task["cmd"].strip()
-                if modified_cmd[-1] != ";":
-                    modified_cmd += ";"
-                modified_cmd += "  wait && echo EVERYTHING_IS_TERMINATED_CORRECTLY_WITH=`expr 100 + 100`-DONE;"
-
-                ret = self.ssh_client.execute(modified_cmd, sudo=False)
-                exe_ret = {
-                    "cmd": unpack_task["cmd"],
-                    "out": ret["out"],
-                    "err": ret["err"],
-                    "status": True,
-                }
-
-                if (
-                    "EVERYTHING_IS_TERMINATED_CORRECTLY_WITH=200-DONE"
-                    not in " ".join(ret["out"])
-                ) and (
-                    "EVERYTHING_IS_TERMINATED_CORRECTLY_WITH=200-DONE"
-                    not in " ".join(ret["err"])
-                ):
-                    exe_ret["status"] = False  # the cmd are not executed correctly
-
-                io_channel.send(json.dumps(exe_ret))
-                pass
-
-            except Exception as e:
-                exe_ret["status"] = False
-                logger.error(
-                    "Error when processing cmd=({}), node=({}:{}) : {}".format(
-                        unpack_task["cmd"], self.remote_host, self.remote_port, e
-                    )
-                )
-            finally:
-                logger.debug(
-                    "In deamon_execution: {}:{} recvs cmd({}) from master".format(
-                        self.remote_host, self.remote_port, unpack_task["cmd"]
-                    )
-                )
-                pass
-            pass
-
-        pass
-
-    def ssh_remote_execution_interactive(self, io_channel):
-        logger.info(f"{self.remote_host}:{self.remote_port} works in interactive mode")
-        while True:
-            logger.debug(
-                f"{self.remote_host}:{self.remote_port} is ready, wait for cmd from master..."
-            )
-            if io_channel.poll():  # the upper layer has submitted new task
-                recv_data = io_channel.recv()  # accept new cmd
-            else:  # otherwise, continue the loops
-                time.sleep(0.5)
-                continue
-            unpack_task = json.loads(recv_data)
-
-            if unpack_task["cmd"] == "CLOSE-IMM":  # terminated right now!
-                logger.info(
-                    f"SSHClient({self.remote_host}:{self.remote_port}) stops services."
-                )
-                break
-
-            assert (
-                unpack_task["interactive"] is True
-            ), f"Invalid task submitted to the interactive channel({self.remote_host}:{self.remote_port})"
-
-            try:
-                modified_cmd = unpack_task["cmd"].strip()
-                if modified_cmd[-1] != ";":
-                    modified_cmd += ";"
-                exe_ret = {"cmd": modified_cmd, "status": True, "out": [], "err": []}
-
-                modified_cmd += "  wait && echo EVERYTHING_IS_TERMINATED_CORRECTLY_WITH=`expr 100 + 100`-DONE;"
-                # logger.info("cmd = {}".format(modified_cmd))
-
-                self.ssh_client.using_interactive_channel(modified_cmd)
-                ret = None
-                should_close = False
-                while not should_close:
-                    while ret is None:
-                        time.sleep(0.5)
-                        ret = self.ssh_client.querying_interactive_channel()
-
-                    if "EVERYTHING_IS_TERMINATED_CORRECTLY_WITH=200-DONE" in ret:
-                        should_close = True
-                    if ret is not None:
-                        if unpack_task["allow_print"] is True:
-                            print(ret, end="")
-                    ret = None
-
-            except Exception as e:
-                exe_ret["status"] = False
-                logger.error(
-                    "Error when processing cmd=({}), node=({}:{}) : {}".format(
-                        unpack_task["cmd"], self.remote_host, self.remote_port, e
-                    )
-                )
-            finally:
-                logger.debug(
-                    "In deamon_execution: {}:{} recvs cmd({}) from master".format(
-                        self.remote_host, self.remote_port, unpack_task["cmd"]
-                    )
-                )
-                io_channel.send(json.dumps(exe_ret))
-                pass
-            pass
-
-        pass
-
     def sftp_file_mode(self, io_channel):
         logger.info(
             f"{self.id}({self.remote_host}:{self.remote_port}) is working in sftp mode"
@@ -903,12 +883,7 @@ class SSHClientSession:
             self.sftp_file_mode(io_channel)
         else:
             self.task_routing(io_channel)
-        # derived API
-        # if args.interactive:
-        #     self.ssh_remote_execution_interactive(io_channel)
-        #     return
 
-        # self.ssh_remote_execution(io_channel)
         pass
 
     def wait_task_from_master(self, io_channel):
@@ -962,9 +937,12 @@ class SSHClientSession:
         logger.info(
             f"{self.remote_host}:{self.remote_port} Executing {cmd} in async mode"
         )
-        cmd = " set -ex; " + cmd
+        cmd = " set -e; " + cmd
         try:
-            self.ssh_client.using_interactive_channel(cmd)
+            if args.stream_log:
+                self.ssh_client.use_streamed_channel(cmd)
+            else:
+                self.ssh_client.using_interactive_channel(cmd)
             # self.ssh_client.use_streamed_channel(cmd)
             ret_ = None
             should_close = False
@@ -972,10 +950,20 @@ class SSHClientSession:
                 while ret_ is None:
                     logger.debug("pull result right now")
                     time.sleep(0.2)
-                    ret_ = self.ssh_client.querying_interactive_channel()
-                    # ret_ = self.ssh_client.query_streamed_channel()
+                    if args.stream_log:
+                        ret_, ret_code = self.ssh_client.query_streamed_channel()
+                        logger.debug("ret-code: {}".format(ret_code))
+                        if ret_code is not None:
+                            should_close = True
+                            break
+                        if ret_code == 0:
+                            ret["status"] = True
+                    else:
+                        ret_ = self.ssh_client.querying_interactive_channel()
+
                 if "EVERYTHING_IS_TERMINATED_CORRECTLY_WITH=200-DONE" in ret_:
                     should_close = True
+
                 if ret_ is not None:
                     print(ret_, end="", flush=True)
                 ret_ = None
@@ -1099,7 +1087,9 @@ class ConnectionManager:
                 if len(each_node) != 0 and each_node not in is_checked:
                     logger.warning(f"cannot find the associated node({each_node})")
         if len(execution_with_error) != 0:
-            logger.warning(f"Some things get wrong at {execution_with_error}")
+            logger.warning(
+                f"\033[33mSome things get wrong at {execution_with_error}\033[0m"
+            )
 
     def start_service(self):
         for each_ssh in self.ssh_handler:
