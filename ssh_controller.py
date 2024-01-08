@@ -13,6 +13,8 @@ import sys
 import json
 import socket
 
+import traceback
+
 try:
     import paramiko
 except ImportError:
@@ -77,7 +79,9 @@ class IPAddrHelper(object):
                     tmp_list.append(real_ip)
             except Exception as e:
                 print(
-                    "failed get ip address, with err={}".format(e),
+                    "failed get ip address, with err={}, stack={}".format(
+                        e, traceback.print_exc()
+                    ),
                     file=sys.stderr,
                     flush=True,
                 )
@@ -179,7 +183,7 @@ class ArgHelper(object):
             "--env",
             type=str,
             default="",
-            help="speficy the environment for execution",
+            help="speficy the environment for execution, multiple envs are split by ';'",
         )
 
         parser.add_argument(
@@ -225,6 +229,20 @@ class ArgHelper(object):
             action="store_true",
             default=False,
             help="dump output logs for remote session, including stdout and stderr",
+        )
+
+        parser.add_argument(
+            "--log_path",
+            type=str,
+            default="",
+            help="dump output logs for remote session, including stdout and stderr",
+        )
+
+        parser.add_argument(
+            "--log_individual",
+            action="store_true",
+            default=False,
+            help="log individual for prefix",
         )
 
         parser.add_argument(
@@ -276,6 +294,12 @@ class ResourceHelper(object):
                 )
             )
         pass
+
+    @staticmethod
+    def str_time_now():
+        now = int(round(time.time() * 1000))
+        now02 = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(now / 1000))
+        return now02
 
 
 def load_logger(args):
@@ -351,6 +375,17 @@ class SshClientImpl:
     "A wrapper of paramiko.SSHClient"
     TIMEOUT = 4  # by default, the maximum time to wait for an ssh connection is 4s
 
+    def __del__(
+        self,
+    ):
+        if self._fp_handler_ is not None:
+            self._fp_handler_.close()
+        if self._pipelined_channel is not None:
+            self._pipelined_channel.close()
+        if self._ssh_interactive is not None:
+            self._ssh_interactive.close()
+        self.client.close()
+
     def __init__(
         self,
         host,
@@ -360,6 +395,7 @@ class SshClientImpl:
         key=None,
         passphrase=None,
         rsa_pub=None,
+        log_file_name=None,
     ):
         self.username = username
         self.password = password
@@ -371,6 +407,8 @@ class SshClientImpl:
         self._pipelined_channel = None
         self._cached_bytes_ = b""
         p_key = key
+        self.log_file_name = log_file_name
+        self._fp_handler_ = None
 
         # ref: https://blog.csdn.net/DaMercy/article/details/127780178
         if rsa_pub != None:  # rsa_pub = "~/.ssh/id_rsa"
@@ -408,7 +446,9 @@ class SshClientImpl:
             self._ssh_interactive.send(cmd + "\r")
             # self._ssh_interactive.send('echo EXECUTION-STATUS:"$?"\r')
         except Exception as e:
-            logger.error(f"Error of executing {cmd}, error: {e}")
+            logger.error(
+                f"Error of executing {cmd}, error: {e}, stack: {traceback.print_exc()}"
+            )
 
     def use_streamed_channel(self, cmd):
         # non_blocking mode: https://gist.github.com/kdheepak/c18f030494fea16ffd92d95c93a6d40d
@@ -423,8 +463,41 @@ class SshClientImpl:
             self._pipelined_channel.exec_command(cmd)
             pass
         except Exception as e:
-            logger.error(f"Error of executing {cmd}, error: {e}")
+            logger.error(
+                f"Error of executing {cmd}, error: {e}, stack: {traceback.print_exc()}"
+            )
         pass
+
+    def dump_log(self, data_utf8):
+        if args.dump_log == False:
+            return
+
+        if data_utf8 is None or len(data_utf8) == 0:
+            return
+
+        if self._fp_handler_ is None:
+            if len(args.log_path) == 0:
+                logger.fatal("No log file specified")
+                raise ValueError("No log file specified in --log_path")
+
+            if (
+                args.log_individual is True
+                and len(args.log_prefix) != 0
+                and len(args.log_path) != 0
+            ):
+                args.unqiue_log_path = os.path.join(args.log_path, args.log_prefix)
+            else:
+                args.unqiue_log_path = args.log_path
+
+            if not os.path.exists(args.unqiue_log_path):
+                os.makedirs(name=args.unqiue_log_path, mode=0o777, exist_ok=True)
+
+            real_log_path = os.path.join(args.unqiue_log_path, self.log_file_name)
+
+            self._fp_handler_ = open(real_log_path + ".txt", "bw")
+            pass
+        self._fp_handler_.write(data_utf8)
+        self._fp_handler_.flush()
 
     def __read_helper__(self, channel, repeat=10, read_byte=4096):
         cnt = 0
@@ -436,7 +509,10 @@ class SshClientImpl:
             pass
 
         try:
-            self._cached_bytes_ += channel.recv(read_byte)
+            read_data = channel.recv(read_byte)
+            self._cached_bytes_ += read_data
+
+            self.dump_log(read_data)
 
             ret_str = self._cached_bytes_.decode("utf-8")
 
@@ -452,13 +528,13 @@ class SshClientImpl:
                 + split_tmp_result[-1]  # for last one, we should alway keep the \n
             )
             return ret_str
-
-        except Exception as e:
-            logger.error(
-                f"node({self.host}:{self.port}) unknown error for execution"
-                f", for reason: {e}"
+        except UnicodeDecodeError as e:
+            logger.warning(
+                f"node({self.host}:{self.port}) decode error, will cache it and redecode it again"
+                f", for reason: {e}, the stack:{traceback.print_exc()}"
             )
             return None
+
         pass
 
     def query_streamed_channel(self):  # not finished yet
@@ -520,7 +596,7 @@ class SshClientImpl:
         except Exception as e:
             logger.error(
                 f"node({self.host}:{self.port}) unknown error for execution"
-                f", for reason: {e}"
+                f", for reason: {e}, stack: {traceback.print_exc()}"
             )
         return ret_str
 
@@ -672,7 +748,7 @@ class SFTPService:
                     )
         except Exception as e:
             logger.warning(
-                "Error of processing copy {}/{} to {}/{} in target = ({}:{}), for reason: {}".format(
+                "Error of processing copy {}/{} to {}/{} in target = ({}:{}), for reason: {}, stack: {}".format(
                     source,
                     item_name,
                     target,
@@ -680,6 +756,7 @@ class SFTPService:
                     self.borrowed_ctx.host,
                     self.borrowed_ctx.port,
                     e,
+                    traceback.print_exc(),
                 )
             )
             exit(0)
@@ -846,7 +923,7 @@ class SSHClientSession:
 
         except Exception as e:
             logger.error(
-                f"Encounter error of processing on node {self.remote_host}, for reason: {e}"
+                f"Encounter error of processing on node {self.remote_host}, for reason: {e}, stack: {traceback.print_exc()}"
             )
 
         pass
@@ -865,11 +942,12 @@ class SSHClientSession:
                 username=self.remote_username,
                 password=self.remote_password,
                 rsa_pub=args.key if len(args.key) != 0 else None,
+                log_file_name=self.id + "." + str(self.node_idx),
             )
             is_connected = True
         except Exception as e:
             logger.error(
-                f"Cannot connected to {self.remote_host}:{self.remote_port}, for error: {e}"
+                f"Cannot connected to {self.remote_host}:{self.remote_port}, for error: {e}, stack: {traceback.print_exc()}"
             )
         finally:
             pass
@@ -990,7 +1068,7 @@ class SSHClientSession:
             ret["status"] = False
             logger.error(
                 f"""Error when processing cmd=({ret['cmd']}), """
-                f"""node=({self.remote_host}:{self.remote_port}) : {e}"""
+                f"""node=({self.remote_host}:{self.remote_port}) for reson: {e}, stack: {traceback.print_exc()}"""
             )
         finally:
             logger.debug(
@@ -1018,7 +1096,7 @@ class SSHClientSession:
         except Exception as e:
             ret["status"] = False
             logger.error(
-                f"Error when processing cmd=({ret['cmd']}), node=({self.remote_host}:{self.remote_port}) : {e}"
+                f"Error when processing cmd=({ret['cmd']}), node=({self.remote_host}:{self.remote_port}) for reason: {e}, stack: {traceback.print_exc()}"
             )
         finally:
             pass
@@ -1233,6 +1311,9 @@ def pre_processing():
 
     if args.stream_log is True:
         args.interactive = True
+
+    if args.log_individual is True:
+        args.log_prefix = ResourceHelper.str_time_now()
 
     assert (
         run_mode != 2 and run_mode != 0
