@@ -1,4 +1,4 @@
-#! /usr/bin/env python3
+#!/usr/bin/env python3
 
 
 import multiprocessing as mp
@@ -12,6 +12,8 @@ import sys
 
 import json
 import socket
+
+import traceback
 
 try:
     import paramiko
@@ -77,7 +79,9 @@ class IPAddrHelper(object):
                     tmp_list.append(real_ip)
             except Exception as e:
                 print(
-                    "failed get ip address, with err={}".format(e),
+                    "failed get ip address, with err={}, stack={}".format(
+                        e, traceback.print_exc()
+                    ),
                     file=sys.stderr,
                     flush=True,
                 )
@@ -178,8 +182,8 @@ class ArgHelper(object):
         parser.add_argument(
             "--env",
             type=str,
-            default="/home/newplan/.software",
-            help="speficy the environment for execution",
+            default="",
+            help="speficy the environment for execution, multiple envs are split by ';'",
         )
 
         parser.add_argument(
@@ -227,6 +231,27 @@ class ArgHelper(object):
             help="dump output logs for remote session, including stdout and stderr",
         )
 
+        parser.add_argument(
+            "--log_path",
+            type=str,
+            default="",
+            help="dump output logs for remote session, including stdout and stderr",
+        )
+
+        parser.add_argument(
+            "--log_individual",
+            action="store_true",
+            default=False,
+            help="log individual for prefix",
+        )
+
+        parser.add_argument(
+            "--debug_shell",
+            action="store_true",
+            default=False,
+            help="show the execution of shell commands in remote session for debug",
+        )
+
         return parser.parse_args()
 
 
@@ -269,6 +294,12 @@ class ResourceHelper(object):
                 )
             )
         pass
+
+    @staticmethod
+    def str_time_now():
+        now = int(round(time.time() * 1000))
+        now02 = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(now / 1000))
+        return now02
 
 
 def load_logger(args):
@@ -344,6 +375,17 @@ class SshClientImpl:
     "A wrapper of paramiko.SSHClient"
     TIMEOUT = 4  # by default, the maximum time to wait for an ssh connection is 4s
 
+    def __del__(
+        self,
+    ):
+        if self._fp_handler_ is not None:
+            self._fp_handler_.close()
+        if self._pipelined_channel is not None:
+            self._pipelined_channel.close()
+        if self._ssh_interactive is not None:
+            self._ssh_interactive.close()
+        self.client.close()
+
     def __init__(
         self,
         host,
@@ -353,6 +395,7 @@ class SshClientImpl:
         key=None,
         passphrase=None,
         rsa_pub=None,
+        log_file_name=None,
     ):
         self.username = username
         self.password = password
@@ -364,9 +407,10 @@ class SshClientImpl:
         self._pipelined_channel = None
         self._cached_bytes_ = b""
         p_key = key
+        self.log_file_name = log_file_name
+        self._fp_handler_ = None
 
-        # https://blog.csdn.net/DaMercy/article/details/127780178
-
+        # ref: https://blog.csdn.net/DaMercy/article/details/127780178
         if rsa_pub != None:  # rsa_pub = "~/.ssh/id_rsa"
             logger.debug("Using public RSA key to loggin remote")
             ResourceHelper.check_or_die(path=rsa_pub)
@@ -390,12 +434,6 @@ class SshClientImpl:
                 timeout=self.TIMEOUT,
             )
 
-    def combine_stderr(
-        self,
-    ):
-        # self.client.
-        pass
-
     def using_interactive_channel(self, cmd):
         # ref: https://blog.csdn.net/weixin_39912556/article/details/80587180
         # ref: https://blog.csdn.net/qq_31127143/article/details/124707117
@@ -408,7 +446,9 @@ class SshClientImpl:
             self._ssh_interactive.send(cmd + "\r")
             # self._ssh_interactive.send('echo EXECUTION-STATUS:"$?"\r')
         except Exception as e:
-            logger.error(f"Error of executing {cmd}, error: {e}")
+            logger.error(
+                f"Error of executing {cmd}, error: {e}, stack: {traceback.print_exc()}"
+            )
 
     def use_streamed_channel(self, cmd):
         # non_blocking mode: https://gist.github.com/kdheepak/c18f030494fea16ffd92d95c93a6d40d
@@ -418,12 +458,46 @@ class SshClientImpl:
             self._pipelined_channel = self.client.get_transport().open_session()
             # self._pipelined_channel.settimeout(0.0)
             self._pipelined_channel.set_combine_stderr(True)
+            # self._pipelined_channel.get_pty()
         try:
             self._pipelined_channel.exec_command(cmd)
             pass
         except Exception as e:
-            logger.error(f"Error of executing {cmd}, error: {e}")
+            logger.error(
+                f"Error of executing {cmd}, error: {e}, stack: {traceback.print_exc()}"
+            )
         pass
+
+    def dump_log(self, data_utf8):
+        if args.dump_log == False:
+            return
+
+        if data_utf8 is None or len(data_utf8) == 0:
+            return
+
+        if self._fp_handler_ is None:
+            if len(args.log_path) == 0:
+                logger.fatal("No log file specified")
+                raise ValueError("No log file specified in --log_path")
+
+            if (
+                args.log_individual is True
+                and len(args.log_prefix) != 0
+                and len(args.log_path) != 0
+            ):
+                args.unqiue_log_path = os.path.join(args.log_path, args.log_prefix)
+            else:
+                args.unqiue_log_path = args.log_path
+
+            if not os.path.exists(args.unqiue_log_path):
+                os.makedirs(name=args.unqiue_log_path, mode=0o777, exist_ok=True)
+
+            real_log_path = os.path.join(args.unqiue_log_path, self.log_file_name)
+
+            self._fp_handler_ = open(real_log_path + ".txt", "bw")
+            pass
+        self._fp_handler_.write(data_utf8)
+        self._fp_handler_.flush()
 
     def __read_helper__(self, channel, repeat=10, read_byte=4096):
         cnt = 0
@@ -435,7 +509,10 @@ class SshClientImpl:
             pass
 
         try:
-            self._cached_bytes_ += channel.recv(read_byte)
+            read_data = channel.recv(read_byte)
+            self._cached_bytes_ += read_data
+
+            self.dump_log(read_data)
 
             ret_str = self._cached_bytes_.decode("utf-8")
 
@@ -451,13 +528,13 @@ class SshClientImpl:
                 + split_tmp_result[-1]  # for last one, we should alway keep the \n
             )
             return ret_str
-
-        except Exception as e:
-            logger.error(
-                f"node({self.host}:{self.port}) unknown error for execution"
-                f", for reason: {e}"
+        except UnicodeDecodeError as e:
+            logger.warning(
+                f"node({self.host}:{self.port}) decode error, will cache it and redecode it again"
+                f", for reason: {e}, the stack:{traceback.print_exc()}"
             )
             return None
+
         pass
 
     def query_streamed_channel(self):  # not finished yet
@@ -471,35 +548,6 @@ class SshClientImpl:
         if self._pipelined_channel.exit_status_ready():
             execution_status = self._pipelined_channel.recv_exit_status()
 
-        def read_helper():
-            cnt = 0
-            while not self._pipelined_channel.recv_ready():
-                time.sleep(0.1)
-                cnt += 1
-                if cnt > 10:
-                    return None
-                pass
-
-            try:
-                ret_str = self._pipelined_channel.recv(16384).decode("utf-8")
-                prefix_format = "<{}>:   ".format(self.host)
-                joint_prefix = "\n" + " " * len(prefix_format)
-                split_tmp_result = ret_str.split("\n")
-                ret_str = (
-                    prefix_format
-                    + joint_prefix.join(split_tmp_result[:-1])
-                    + "\n"
-                    + split_tmp_result[-1]  # for last one, we should alway keep the \n
-                )
-                return ret_str
-
-            except Exception as e:
-                logger.error(
-                    f"node({self.host}:{self.port}) unknown error for execution"
-                    f", for reason: {e}"
-                )
-
-        # result = read_helper()
         result = self.__read_helper__(self._pipelined_channel)
 
         if result is not None:
@@ -548,7 +596,7 @@ class SshClientImpl:
         except Exception as e:
             logger.error(
                 f"node({self.host}:{self.port}) unknown error for execution"
-                f", for reason: {e}"
+                f", for reason: {e}, stack: {traceback.print_exc()}"
             )
         return ret_str
 
@@ -563,35 +611,71 @@ class SshClientImpl:
             self.client.close()
             self.client = None
 
-    def load_env(self, env=args.env):
+    def _load_env_helper_(self, env):
+        env_prefix = ""
+        if env is None:
+            return env_prefix
+
         env = env.strip()
         if len(env) == 0:
-            return " set -e; "  # return immediately if error
+            return [env_prefix for x in range(5)]  # return immediately if error
 
-        if env[-1] == ";":
+        while len(env) > 0 and env[-1] == ";":
             env = env[:-2]
 
-        if env[-1] == "/":
+        while len(env) > 0 and env[-1] == "/":
             env = env[:-2]
 
         BASE_PREFIX = env
 
-        LIBRARY_PATH = f'export LIBRARY_PATH="{BASE_PREFIX}/lib:{BASE_PREFIX}/lib64:$LIBRARY_PATH";'
-        LD_LIBRARY_PATH = f'export LD_LIBRARY_PATH="{BASE_PREFIX}/lib:{BASE_PREFIX}/lib64:$LD_LIBRARY_PATH";'
-        PATH = f'export PATH="{BASE_PREFIX}/bin:$PATH";'
+        cpp_include_path = f"{BASE_PREFIX}/include:"
+        c_include_path = f"{BASE_PREFIX}/include:"
+        path = f"{BASE_PREFIX}/bin:"
+        ld_library_path = f"{BASE_PREFIX}/lib:{BASE_PREFIX}/lib64:"
+        library_path = f"{BASE_PREFIX}/lib:{BASE_PREFIX}/lib64:"
 
-        C_INCLUDE_PATH = (
-            f'export C_INCLUDE_PATH="{BASE_PREFIX}/include:$C_INCLUDE_PATH";'
-        )
+        return path, c_include_path, cpp_include_path, ld_library_path, library_path
 
-        CPLUS_INCLUDE_PATH = (
-            f'export CPLUS_INCLUDE_PATH="{BASE_PREFIX}/include:$CPLUS_INCLUDE_PATH";'
-        )
+    def load_env(self, env=args.env):
+        env_prefix = " set -e; "
 
-        base_env = "".join(
-            [LD_LIBRARY_PATH, LIBRARY_PATH, C_INCLUDE_PATH, CPLUS_INCLUDE_PATH, PATH]
+        env_vect = env.split(";")
+        env_str: dict[list] = {
+            "path": [],
+            "c_include_path": [],
+            "cpp_include_path": [],
+            "ld_library_path": [],
+            "library_path": [],
+        }
+        for each_env in env_vect:
+            (
+                path,
+                c_include_path,
+                cpp_include_path,
+                ld_library_path,
+                library_path,
+            ) = self._load_env_helper_(each_env)
+            env_str["path"].append(path)
+            env_str["c_include_path"].append(c_include_path)
+            env_str["cpp_include_path"].append(cpp_include_path)
+            env_str["ld_library_path"].append(ld_library_path)
+            env_str["library_path"].append(library_path)
+
+        ret_env_var = ""
+        ret_env_var += " export PATH={}:$PATH;".format("".join(env_str["path"]))
+        ret_env_var += " export C_INCLUDE_PATH={}:$C_INCLUDE_PATH;".format(
+            "".join(env_str["c_include_path"])
         )
-        return base_env + " set -e; "  # return immediately if error
+        ret_env_var += " export CPLUS_INCLUDE_PATH={}:$CPLUS_INCLUDE_PATH;".format(
+            "".join(env_str["cpp_include_path"])
+        )
+        ret_env_var += " export LD_LIBRARY_PATH={}:$LD_LIBRARY_PATH;".format(
+            "".join(env_str["ld_library_path"])
+        )
+        ret_env_var += " export LIBRARY_PATH={}:$LIBRARY_PATH;".format(
+            "".join(env_str["library_path"])
+        )
+        return ret_env_var + env_prefix
 
     def execute(self, command, sudo=False):
         feed_password = False
@@ -609,18 +693,7 @@ class SshClientImpl:
             )
         )
 
-        def real_execute(ssh, cmd):
-            # https://stackoverflow.com/questions/3823862/paramiko-combine-stdout-and-stderr
-            trans = ssh.get_transport()
-            chan = tran.open_session()
-            chan.set_combine_stderr(True)
-            chan.get_pty()
-            f = chan.makefile()
-            chan.exec_command(cmd)
-            return _, f.read(), _2
-
         stdin, stdout, stderr = self.client.exec_command(real_execute_cmd, get_pty=True)
-        # stdin, stdout, stderr = real_execute(self.client, real_execute_cmd)
 
         if args.sudo and feed_password:
             stdin.write(self.password + "\n")
@@ -639,7 +712,14 @@ class SFTPService:
         self._sftp_channel = paramiko.SFTPClient.from_transport(
             self.borrowed_ctx.get_channel().get_transport()
         )
+        self.__is_local_node = IPAddrHelper.is_local(self.borrowed_ctx.host)
+        assert len(self.borrowed_ctx.host) != 0, "invalid remote host node"
         pass
+
+    def __file_filter__(self, name) -> bool:
+        if name is None or name == "." or name == "..":
+            return True
+        return False
 
     def copy_files(self, source, target):
         """Uploads the contents of the source directory to the target path. The
@@ -647,7 +727,7 @@ class SFTPService:
         created under target.
         """
 
-        if source == target and IPAddrHelper.is_local(self.borrowed_ctx.host):
+        if source == target and self.__is_local_node:
             logger.warning("IGNORE self-node: {}".format(self.borrowed_ctx.host))
             return
 
@@ -655,9 +735,26 @@ class SFTPService:
 
         try:
             if os.path.isdir(source):  # create directory if it is
-                self.mkdir(target, ignore_existing=True)
+                self.mkdir_remote(target, ignore_existing=True)
+
+            if os.path.isfile(source):  #
+                assert (
+                    None not in [target, source]
+                    and target.startswith("/")
+                    and source.startswith("/")
+                ), "invalid path for src={}, and dest={}, please use the abs path, start with '/'".format(
+                    source, target
+                )
+                # tmp create remote dir and delete them latter
+                # self.mkdir_remote(target, ignore_existing=True)
+                self._sftp_channel.put(source, target)
+                # self._sftp_channel.rmdir(target)
+                return
 
             for item in os.listdir(source):
+                if self.__file_filter__(item):  # donnot copy current path
+                    continue
+
                 if os.path.isfile(os.path.join(source, item)):
                     logger.debug(
                         "processing {} --> {}".format(
@@ -669,13 +766,13 @@ class SFTPService:
                         os.path.join(source, item), "%s/%s" % (target, item)
                     )
                 else:
-                    self.mkdir("%s/%s" % (target, item), ignore_existing=True)
+                    self.mkdir_remote("%s/%s" % (target, item), ignore_existing=True)
                     self.copy_files(
                         os.path.join(source, item), "%s/%s" % (target, item)
                     )
         except Exception as e:
             logger.warning(
-                "Error of processing copy {}/{} to {}/{} in target = ({}:{}), for reason: {}".format(
+                "Error of processing copy {}/{} to {}/{} in target = ({}:{}), for reason: {}, stack: {}".format(
                     source,
                     item_name,
                     target,
@@ -683,11 +780,12 @@ class SFTPService:
                     self.borrowed_ctx.host,
                     self.borrowed_ctx.port,
                     e,
+                    traceback.print_exc(),
                 )
             )
             exit(0)
 
-    def mkdir(self, path, mode=1776, ignore_existing=False):
+    def mkdir_remote(self, path, mode=1776, ignore_existing=False):
         """Augments mkdir by adding an option to not fail if the folder exists"""
         try:
             self._sftp_channel.mkdir(path)  # , mode)
@@ -710,6 +808,7 @@ class SSHClientSession:
         self.remote_username = username
         self.remote_password = password
         self.id = id
+        self.node_idx = -1
 
         self.parent_channel, self.child_channel = mp.Pipe()
         self.process_handler = None
@@ -793,6 +892,9 @@ class SSHClientSession:
 
         encounting_error = False
 
+        if args.interactive == True:
+            allowed_print = False
+
         if ret["status"] is False:  # encounting errors
             logger.error("Encounter an error at {}".format(self.id))
             allowed_print = True
@@ -805,7 +907,7 @@ class SSHClientSession:
                     self.id,
                     self.remote_host,
                     self.remote_port,
-                    "  ".join(ret["out"]).replace(
+                    " ".join(ret["out"]).replace(
                         "EVERYTHING_IS_TERMINATED_CORRECTLY_WITH=200-DONE\r\n", ""
                     )
                     + " ".join(ret["err"]).replace(
@@ -845,7 +947,7 @@ class SSHClientSession:
 
         except Exception as e:
             logger.error(
-                f"Encounter error of processing on node {self.remote_host}, for reason: {e}"
+                f"Encounter error of processing on node {self.remote_host}, for reason: {e}, stack: {traceback.print_exc()}"
             )
 
         pass
@@ -864,11 +966,12 @@ class SSHClientSession:
                 username=self.remote_username,
                 password=self.remote_password,
                 rsa_pub=args.key if len(args.key) != 0 else None,
+                log_file_name=self.id + "." + str(self.node_idx),
             )
             is_connected = True
         except Exception as e:
             logger.error(
-                f"Cannot connected to {self.remote_host}:{self.remote_port}, for error: {e}"
+                f"Cannot connected to {self.remote_host}:{self.remote_port}, for error: {e}, stack: {traceback.print_exc()}"
             )
         finally:
             pass
@@ -913,6 +1016,9 @@ class SSHClientSession:
                     f"SSHClient({self.remote_host}:{self.remote_port}) stops services."
                 )
                 break
+            debug_shell_cmd = "set -ex ;" if args.debug_shell else "set -e ;"
+            prefix_cmd = "export UNIQUE_SERVER_NODE_IDX={}; ".format(self.node_idx)
+            postfix_cmd = "  wait && echo EVERYTHING_IS_TERMINATED_CORRECTLY_WITH=`expr 100 + 100`-DONE;"
 
             modified_cmd = unpack_task["cmd"].strip()
             if modified_cmd[-1] != ";":
@@ -920,13 +1026,20 @@ class SSHClientSession:
 
             exe_ret = {"cmd": modified_cmd, "status": True, "out": [], "err": []}
 
-            modified_cmd += "  wait && echo EVERYTHING_IS_TERMINATED_CORRECTLY_WITH=`expr 100 + 100`-DONE;"
+            remote_cmd = " ".join(
+                [
+                    debug_shell_cmd,
+                    prefix_cmd,
+                    modified_cmd,
+                    postfix_cmd,
+                ]
+            )
 
             if unpack_task["interactive"] is True:
-                self.execute_async(cmd=modified_cmd, ret=exe_ret)
+                self.execute_async(cmd=remote_cmd, ret=exe_ret)
                 pass
             else:
-                self.execute_sync(cmd=modified_cmd, ret=exe_ret)
+                self.execute_sync(cmd=remote_cmd, ret=exe_ret)
                 pass
 
             io_channel.send(json.dumps(exe_ret))
@@ -935,15 +1048,18 @@ class SSHClientSession:
 
     def execute_async(self, cmd: str, ret: dict):
         logger.info(
-            f"{self.remote_host}:{self.remote_port} Executing {cmd} in async mode"
+            "[{}:{}] Executing [{}] in async mode".format(
+                self.remote_host, self.remote_port, self.ssh_client.load_env() + cmd
+            )
         )
-        cmd = " set -e; " + cmd
         try:
             if args.stream_log:
-                self.ssh_client.use_streamed_channel(cmd)
+                self.ssh_client.use_streamed_channel(self.ssh_client.load_env() + cmd)
             else:
-                self.ssh_client.using_interactive_channel(cmd)
-            # self.ssh_client.use_streamed_channel(cmd)
+                self.ssh_client.using_interactive_channel(
+                    self.ssh_client.load_env() + cmd
+                )
+
             ret_ = None
             should_close = False
             while not should_close:
@@ -976,7 +1092,7 @@ class SSHClientSession:
             ret["status"] = False
             logger.error(
                 f"""Error when processing cmd=({ret['cmd']}), """
-                f"""node=({self.remote_host}:{self.remote_port}) : {e}"""
+                f"""node=({self.remote_host}:{self.remote_port}) for reson: {e}, stack: {traceback.print_exc()}"""
             )
         finally:
             logger.debug(
@@ -1004,7 +1120,7 @@ class SSHClientSession:
         except Exception as e:
             ret["status"] = False
             logger.error(
-                f"Error when processing cmd=({ret['cmd']}), node=({self.remote_host}:{self.remote_port}) : {e}"
+                f"Error when processing cmd=({ret['cmd']}), node=({self.remote_host}:{self.remote_port}) for reason: {e}, stack: {traceback.print_exc()}"
             )
         finally:
             pass
@@ -1039,13 +1155,20 @@ class ConnectionManager:
         logger.info("Creating ConnectionManager")
         self.ssh_handler = []
         self.enable_sftp = False
+        self.ssh_count_start = 0
         if enable_sftp:
             logger.warning("enable sftp service")
             self.enable_sftp = True
         pass
 
+    def allocate_node_id(self):
+        ret = self.ssh_count_start
+        self.ssh_count_start += 1
+        return ret
+
     def add_client(self, id, ip, port=22, username="newplan", password=" "):
         ssh_client_sess = SSHClientSession(ip, port, username, password, id)
+        ssh_client_sess.node_idx = self.allocate_node_id()
         self.ssh_handler.append(ssh_client_sess)
 
     def connect(self):
@@ -1210,6 +1333,12 @@ def pre_processing():
         run_mode += 1
         pass
 
+    if args.stream_log is True:
+        args.interactive = True
+
+    if args.log_individual is True:
+        args.log_prefix = ResourceHelper.str_time_now()
+
     assert (
         run_mode != 2 and run_mode != 0
     ), "you cannot run both sync file and execute cmd simultaneously, or put them empty simultaneously"
@@ -1247,8 +1376,17 @@ def main():
             interactive=args.interactive,
         )
 
+        log_prefix = "============================"
+
         logger.info(
-            "==============All executions are processed successfully, now release resources==============\n\n"
+            " ".join(
+                [
+                    log_prefix,
+                    "All executions are processed successfully, now release resources",
+                    log_prefix,
+                    "\n\n",
+                ]
+            )
         )
 
     if args.sync:
