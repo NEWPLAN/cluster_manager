@@ -1,4 +1,4 @@
-#! /usr/bin/env python3
+#!/usr/bin/env python3
 
 
 import multiprocessing as mp
@@ -712,7 +712,14 @@ class SFTPService:
         self._sftp_channel = paramiko.SFTPClient.from_transport(
             self.borrowed_ctx.get_channel().get_transport()
         )
+        self.__is_local_node = IPAddrHelper.is_local(self.borrowed_ctx.host)
+        assert len(self.borrowed_ctx.host) != 0, "invalid remote host node"
         pass
+
+    def __file_filter__(self, name) -> bool:
+        if name is None or name == "." or name == "..":
+            return True
+        return False
 
     def copy_files(self, source, target):
         """Uploads the contents of the source directory to the target path. The
@@ -720,7 +727,7 @@ class SFTPService:
         created under target.
         """
 
-        if source == target and IPAddrHelper.is_local(self.borrowed_ctx.host):
+        if source == target and self.__is_local_node:
             logger.warning("IGNORE self-node: {}".format(self.borrowed_ctx.host))
             return
 
@@ -728,9 +735,26 @@ class SFTPService:
 
         try:
             if os.path.isdir(source):  # create directory if it is
-                self.mkdir(target, ignore_existing=True)
+                self.mkdir_remote(target, ignore_existing=True)
+
+            if os.path.isfile(source):  #
+                assert (
+                    None not in [target, source]
+                    and target.startswith("/")
+                    and source.startswith("/")
+                ), "invalid path for src={}, and dest={}, please use the abs path, start with '/'".format(
+                    source, target
+                )
+                # tmp create remote dir and delete them latter
+                # self.mkdir_remote(target, ignore_existing=True)
+                self._sftp_channel.put(source, target)
+                # self._sftp_channel.rmdir(target)
+                return
 
             for item in os.listdir(source):
+                if self.__file_filter__(item):  # donnot copy current path
+                    continue
+
                 if os.path.isfile(os.path.join(source, item)):
                     logger.debug(
                         "processing {} --> {}".format(
@@ -742,7 +766,7 @@ class SFTPService:
                         os.path.join(source, item), "%s/%s" % (target, item)
                     )
                 else:
-                    self.mkdir("%s/%s" % (target, item), ignore_existing=True)
+                    self.mkdir_remote("%s/%s" % (target, item), ignore_existing=True)
                     self.copy_files(
                         os.path.join(source, item), "%s/%s" % (target, item)
                     )
@@ -761,7 +785,7 @@ class SFTPService:
             )
             exit(0)
 
-    def mkdir(self, path, mode=1776, ignore_existing=False):
+    def mkdir_remote(self, path, mode=1776, ignore_existing=False):
         """Augments mkdir by adding an option to not fail if the folder exists"""
         try:
             self._sftp_channel.mkdir(path)  # , mode)
